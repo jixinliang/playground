@@ -1,3 +1,24 @@
+use std::hint::black_box;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::thread;
+use std::time::Instant;
+
+static A: AtomicU64 = AtomicU64::new(0);
+
 fn main() {
-    println!("Hello, world!");
+    black_box(&A);
+
+    // New!
+    thread::spawn(|| loop {
+        // New!
+        black_box(A.store(0, Relaxed));
+    });
+
+    let start = Instant::now();
+
+    for _ in 0..1_000_000_000 {
+        black_box(A.load(Relaxed));
+    }
+
+    println!("{:?}", start.elapsed());
 }
