@@ -1,31 +1,37 @@
-use std::hint::black_box;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{
+    compiler_fence, AtomicBool, AtomicUsize,
+    Ordering::{Acquire, Relaxed, Release},
+};
+
 use std::thread;
-use std::time::Instant;
-
-// 该结构体必须是64字节对齐的
-#[repr(align(64))]
-struct Aligned(AtomicU64);
-
-static A: [Aligned; 3] = [
-    Aligned(AtomicU64::new(0)),
-    Aligned(AtomicU64::new(0)),
-    Aligned(AtomicU64::new(0)),
-];
 
 fn main() {
-    black_box(&A);
+    let locked = AtomicBool::new(false);
 
-    thread::spawn(|| loop {
-        A[0].0.store(0, Relaxed);
-        A[2].0.store(0, Relaxed);
+    let counter = AtomicUsize::new(0);
+
+    thread::scope(|s| {
+        // Spawn fore thread, that each iterate a million times.
+        for _ in 0..4 {
+            s.spawn(|| {
+                for _ in 0..1_000_000 {
+                    // Acquire the lock, using the wrong memory ordering.
+                    while locked.swap(true, Relaxed) {}
+                    compiler_fence(Acquire);
+
+                    // Non-atomiclly increment the counter,
+                    // while holding the lock
+                    let old = counter.load(Relaxed);
+                    let new = old + 1;
+                    counter.store(new, Relaxed);
+
+                    // Release the lock, using the wrong memory ordering.
+                    compiler_fence(Release);
+                    locked.store(false, Relaxed);
+                }
+            });
+        }
     });
 
-    let start = Instant::now();
-
-    for _ in 0..100_000_000 {
-        black_box(A[1].0.load(Relaxed));
-    }
-
-    println!("{:?}", start.elapsed());
+    println!("{}", counter.into_inner());
 }
