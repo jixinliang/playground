@@ -1,37 +1,52 @@
-use std::sync::atomic::{
-    compiler_fence, AtomicBool, AtomicUsize,
-    Ordering::{Acquire, Relaxed, Release},
-};
-
+use libc;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::thread;
+use std::time::Duration;
+
+#[cfg(not(target_os = "linux"))]
+compile_error!("Linux only. Sorry!");
+
+pub fn wait(a: &AtomicU32, expected: u32) {
+    // Refer to the futex (2) man page for the syscall signature.
+    unsafe {
+        libc::syscall(
+            libc::SYS_futex,                    // The futex syscall.
+            a as *const AtomicU32,              // The atomic to operate on.
+            libc::FUTEX_WAIT,                   // The futex operation
+            expected,                           // The expected value.
+            std::ptr::null::<libc::timespec>(), // No timeout.
+        );
+    }
+}
+
+pub fn wake_one(a: &AtomicU32) {
+    // Refer to the futex (2) man page for the syscall signature.
+    unsafe {
+        libc::syscall(
+            libc::SYS_futex,       // The futex syscall.
+            a as *const AtomicU32, // The atomic to operate on.
+            libc::FUTEX_WAKE,      // The futex operation.
+            1,                     // The number of threads to wake up.
+        );
+    }
+}
 
 fn main() {
-    let locked = AtomicBool::new(false);
-
-    let counter = AtomicUsize::new(0);
+    let a = AtomicU32::new(0);
 
     thread::scope(|s| {
-        // Spawn fore thread, that each iterate a million times.
-        for _ in 0..4 {
-            s.spawn(|| {
-                for _ in 0..1_000_000 {
-                    // Acquire the lock, using the wrong memory ordering.
-                    while locked.swap(true, Relaxed) {}
-                    compiler_fence(Acquire);
+        s.spawn(|| {
+            thread::sleep(Duration::from_secs(3));
+            a.store(1, Relaxed);
+            wake_one(&a);
+        });
 
-                    // Non-atomiclly increment the counter,
-                    // while holding the lock
-                    let old = counter.load(Relaxed);
-                    let new = old + 1;
-                    counter.store(new, Relaxed);
+        println!("Waiting...");
 
-                    // Release the lock, using the wrong memory ordering.
-                    compiler_fence(Release);
-                    locked.store(false, Relaxed);
-                }
-            });
+        while a.load(Relaxed) == 0 {
+            wait(&a, 0);
         }
-    });
 
-    println!("{}", counter.into_inner());
+        println!("Done!");
+    });
 }
